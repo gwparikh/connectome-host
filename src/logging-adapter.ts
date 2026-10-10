@@ -68,6 +68,33 @@ export type ProviderCallObserver = (record: ProviderCallRecord) => void;
  *  system-prompt-append uses). */
 const OAUTH_SYSTEM_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
 
+/** The identity line the Claude Agent SDK sends ahead of a fully custom
+ *  `systemPrompt`. Verified 2026-10-08: accepted as the first block on
+ *  subscription traffic (no billing-header block needed), while a persona
+ *  block alone still gets the masked 429. Opt in with
+ *  ANTHROPIC_OAUTH_IDENTITY=agent-sdk for residents that shouldn't be told
+ *  they are Claude Code on every turn. */
+const OAUTH_AGENT_SDK_IDENTITY = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
+
+const OAUTH_IDENTITIES: Record<string, string> = {
+  'claude-code': OAUTH_SYSTEM_IDENTITY,
+  'agent-sdk': OAUTH_AGENT_SDK_IDENTITY,
+};
+
+/** ANTHROPIC_OAUTH_IDENTITY → identity line; unset/'' is the Claude Code line.
+ *  Unknown values throw so a typo can't silently 429 every turn. */
+export function resolveOAuthIdentity(value: string | undefined): string {
+  const key = (value ?? '').trim().toLowerCase();
+  if (key === '') return OAUTH_SYSTEM_IDENTITY;
+  const line = OAUTH_IDENTITIES[key];
+  if (!line) {
+    throw new Error(
+      `ANTHROPIC_OAUTH_IDENTITY=${JSON.stringify(value)} is not recognized; use ${Object.keys(OAUTH_IDENTITIES).join(' or ')}`,
+    );
+  }
+  return line;
+}
+
 /** Truthy env-flag parse: unset/''/'0'/'false' (any case) are off. */
 function envFlag(value: string | undefined, name = 'LLM_CALLS_FULL_PAYLOADS'): boolean {
   // Fail-closed allowlist, same posture as gate-telemetry's flag (#119):
@@ -92,6 +119,8 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
   /** True when authenticated with an OAuth/Bearer token instead of an API
    *  key; requests then need the identity block prepended (see above). */
   private readonly oauthMode: boolean;
+  /** The identity block prepended under OAuth (ANTHROPIC_OAUTH_IDENTITY). */
+  private readonly oauthIdentity: string;
   /** LLM_CALLS_FULL_PAYLOADS=1: retain the full raw request on EVERY call,
    *  not just refusals/errors. Purpose: pass/refusal contrast corpora — a
    *  refusal's payload is only interpretable next to the passing payloads
@@ -112,6 +141,7 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
     this.getReasoning = getReasoning;
     this.onCall = onCall;
     this.oauthMode = Boolean(config?.authToken);
+    this.oauthIdentity = resolveOAuthIdentity(process.env.ANTHROPIC_OAUTH_IDENTITY);
   }
 
   /** Under OAuth subscription auth, prepend the required identity block to the
@@ -126,10 +156,10 @@ export class LoggingAnthropicAdapter extends AnthropicAdapter {
         ? [{ type: 'text', text: sys }]
         : Array.isArray(sys) ? sys : [];
     const first = blocks[0] as { type?: string; text?: string } | undefined;
-    if (first?.type === 'text' && first.text === OAUTH_SYSTEM_IDENTITY) return request;
+    if (first?.type === 'text' && first.text === this.oauthIdentity) return request;
     return {
       ...request,
-      system: [{ type: 'text', text: OAUTH_SYSTEM_IDENTITY }, ...blocks],
+      system: [{ type: 'text', text: this.oauthIdentity }, ...blocks],
     };
   }
 

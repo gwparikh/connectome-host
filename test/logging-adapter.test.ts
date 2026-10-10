@@ -218,3 +218,45 @@ describe('LoggingAnthropicAdapter request logging', () => {
     });
   });
 });
+
+describe('LoggingAnthropicAdapter.withOAuthIdentity', () => {
+  type WithIdentity = { withOAuthIdentity(r: ProviderRequest): ProviderRequest };
+  const CC = "You are Claude Code, Anthropic's official CLI for Claude.";
+  const SDK = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
+  const persona = { ...baseRequest, system: 'You are Fable 5.' } as ProviderRequest;
+  const withIdentity = (identity: string | undefined, config: { authToken?: string; apiKey?: string } = { authToken: 'oat' }) => {
+    const prev = process.env.ANTHROPIC_OAUTH_IDENTITY;
+    if (identity === undefined) delete process.env.ANTHROPIC_OAUTH_IDENTITY;
+    else process.env.ANTHROPIC_OAUTH_IDENTITY = identity;
+    try {
+      return new LoggingAnthropicAdapter(config, '/dev/null') as unknown as WithIdentity;
+    } finally {
+      if (prev === undefined) delete process.env.ANTHROPIC_OAUTH_IDENTITY;
+      else process.env.ANTHROPIC_OAUTH_IDENTITY = prev;
+    }
+  };
+
+  test('defaults to the Claude Code line ahead of the persona', () => {
+    const out = withIdentity(undefined).withOAuthIdentity(persona);
+    expect(out.system).toEqual([{ type: 'text', text: CC }, { type: 'text', text: 'You are Fable 5.' }]);
+  });
+
+  test('agent-sdk selects the Agent SDK line', () => {
+    const out = withIdentity('agent-sdk').withOAuthIdentity(persona);
+    expect(out.system).toEqual([{ type: 'text', text: SDK }, { type: 'text', text: 'You are Fable 5.' }]);
+  });
+
+  test('does not prepend twice', () => {
+    const adapter = withIdentity('agent-sdk');
+    const once = adapter.withOAuthIdentity(persona);
+    expect(adapter.withOAuthIdentity(once)).toBe(once);
+  });
+
+  test('no-op under API-key auth', () => {
+    expect(withIdentity('agent-sdk', { apiKey: 'test' }).withOAuthIdentity(persona)).toBe(persona);
+  });
+
+  test('unknown value throws at construction', () => {
+    expect(() => withIdentity('claude-cod')).toThrow(/ANTHROPIC_OAUTH_IDENTITY/);
+  });
+});
